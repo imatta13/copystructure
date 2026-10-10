@@ -1,0 +1,19 @@
+# Generated Vencord bundle; GitHub Actions builds and attaches it to releases.
+/dist/
+
+# Local snapshots and temporary installers.
+/backup/
+*.copystructure-new
+*.copystructure-backup
+*.copystructure-backup-*/
+CopyStructure-bundle.zip
+
+# Dependencies and build output.
+/node_modules/
+/.pnpm-store/
+
+# Local editor and operating-system files.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,113 @@
+name: Build latest Vencord bundle
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/userplugins/copystructure/**"
+      - "INSTALL.cmd"
+      - "INSTALL.sh"
+      - "INSTALL-BUNDLE.cmd"
+      - "INSTALL-BUNDLE.sh"
+      - "FETCH-LATEST.ps1"
+      - "THIRD_PARTY_NOTICES.md"
+      - ".github/workflows/update-vencord-bundle.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CopyStructure
+        uses: actions/checkout@v4
+
+      - name: Checkout latest Vencord main
+        uses: actions/checkout@v4
+        with:
+          repository: Vendicated/Vencord
+          ref: main
+          path: vencord
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: vencord/pnpm-lock.yaml
+
+      - name: Check whether this Vencord commit has a release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd vencord
+          SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+          PLUGIN_SHA="$(git -C "$GITHUB_WORKSPACE" rev-parse --short=12 HEAD)"
+          TAG="vencord-${SHORT_SHA}-copy-${PLUGIN_SHA}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "plugin_sha=$PLUGIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Vencord dependencies
+        if: steps.release.outputs.exists != 'true'
+        working-directory: vencord
+        run: pnpm install --frozen-lockfile
+
+      - name: Add CopyStructure to Vencord
+        if: steps.release.outputs.exists != 'true'
+        run: |
+          mkdir -p vencord/src/plugins/copystructure
+          cp src/userplugins/copystructure/index.tsx vencord/src/plugins/copystructure/index.tsx
+
+      - name: Build standalone Vencord bundle
+        if: steps.release.outputs.exists != 'true'
+        working-directory: vencord
+        run: pnpm build --standalone --disable-updater
+
+      - name: Assemble release archive
+        if: steps.release.outputs.exists != 'true'
+        run: |
+          mkdir -p release/dist
+          cp -a vencord/dist/. release/dist/
+          cp INSTALL-BUNDLE.cmd INSTALL-BUNDLE.sh release/
+          cp INSTALL.cmd INSTALL.sh FETCH-LATEST.ps1 release/
+          cp THIRD_PARTY_NOTICES.md release/
+          cp vencord/LICENSE release/dist/LICENSE
+          printf '%s\n' '${{ steps.release.outputs.tag }}' > release/BUNDLE-VERSION.txt
+          cd release
+          zip -qr ../CopyStructure-bundle.zip .
+
+      - name: Validate release archive
+        if: steps.release.outputs.exists != 'true'
+        run: |
+          unzip -l CopyStructure-bundle.zip
+          unzip -p CopyStructure-bundle.zip dist/renderer.js | grep -aFq 'CopyStructure'
+          unzip -p CopyStructure-bundle.zip dist/renderer.js | grep -aFq 'Standalone: true'
+          unzip -p CopyStructure-bundle.zip dist/renderer.js | grep -aFq 'Updater Disabled: true'
+
+      - name: Publish release
+        if: steps.release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create '${{ steps.release.outputs.tag }}' CopyStructure-bundle.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title 'CopyStructure bundle - Vencord ${{ steps.release.outputs.short_sha }}' \
+            --notes 'Precompiled universal Vencord bundle with CopyStructure. Based on Vendicated/Vencord commit ${{ steps.release.outputs.sha }}. Built with --standalone --disable-updater.'
